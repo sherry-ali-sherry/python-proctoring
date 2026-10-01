@@ -1,0 +1,4 @@
+extend this project now:
+> It should not detect Realtime but instead i should upload a video to this system and the system analyzes the video frame by frame using the existing logic,and detects cheating or no cheating based on looking or not looking onto the screen. Make no mistakes acts as a senior developer.
+>also before the camera opens there should be a logic where a person enters his/her name after that he uploads a video and you analyze it 
+>After analyzing the video you will provide results in a separate folder named from the named enter before uploading the video inside the projects with multiple sub folders such as recording where all the clips are stored where the person is not looking on the screen along with a proper report and timestamps for where you think he wasn't looking at the camera.

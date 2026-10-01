@@ -1,0 +1,30 @@
+# ExamVision Phase 1 -- dependencies
+#
+# All dependencies below are open-source, free for commercial use,
+# and require no cloud services or paid API keys. License summary
+# also documented in README.md "Dependencies & Licenses".
+#
+# Note: scipy is optional (tests only) and omitted here to avoid
+# build-from-source issues on Python 3.14. Install separately if needed:
+#   pip install scipy>=1.14.0
+#
+# MediaPipe: the legacy mp.solutions.face_mesh API used by early Phase 1
+# builds was removed from the mediapipe PyPI package in 0.10.30+. face/
+# face_tracker.py now uses the current Tasks API (mp.tasks.vision.
+# FaceLandmarker), which downloads and caches its own model bundle on
+# first run (see _ensure_model in face_tracker.py) -- no separate model
+# download step needed here.
+
+opencv-python>=4.10.0          # BSD-3-Clause. https://github.com/opencv/opencv-python
+mediapipe>=0.10.14              # Apache-2.0. https://github.com/google-ai-edge/mediapipe (Tasks API)
+numpy>=2.0.0                   # BSD-3-Clause. https://numpy.org/
+av>=14.0.0                     # BSD-3-Clause (wheels bundle FFmpeg). H.264 video that browsers can play.
+
+# Web application (serve.py)
+fastapi>=0.115.0               # MIT
+uvicorn[standard]>=0.30.0      # BSD-3-Clause
+python-multipart>=0.0.9        # Apache-2.0 (file uploads)
+
+# Tests only
+pytest>=8.0.0                  # MIT
+httpx>=0.27.0                  # BSD-3-Clause (FastAPI TestClient)
