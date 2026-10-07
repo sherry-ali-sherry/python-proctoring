@@ -49,6 +49,9 @@ calibration_data.json
 # ExamVision generated results
 # =========================
 results/
+_backup_before_v1.2/
+_backup_before_v1.3/
+_backup_before_v1.4/
 
 # =========================
 # Video / image files
