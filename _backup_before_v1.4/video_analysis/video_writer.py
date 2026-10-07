@@ -40,12 +40,7 @@ class VideoWriter:
     """Frame-by-frame video writer. `path_base` has no extension; the
     final file is `path_base + .mp4` (or `.avi` in the MJPG last resort)."""
 
-    def __init__(self, path_base: Path, fps: float, size: Tuple[int, int], max_height: Optional[int] = None,
-                 preset: str = "ultrafast"):
-        # v1.4: x264 "ultrafast" (was "veryfast") at the same quality target
-        # (crf 23): ~3x faster encoding, files ~1.8x larger. Clip encoding was
-        # the largest remaining cost of an analysis.
-        self._preset = preset
+    def __init__(self, path_base: Path, fps: float, size: Tuple[int, int], max_height: Optional[int] = None):
         w, h = size
         if max_height and h > max_height:
             w, h = int(round(w * max_height / h)), max_height
@@ -77,7 +72,7 @@ class VideoWriter:
                 stream.width, stream.height = self.size
                 stream.pix_fmt = "yuv420p"
                 if encoder == "libx264":
-                    stream.options = {"crf": "23", "preset": self._preset}
+                    stream.options = {"crf": "23", "preset": "veryfast"}
                 # Hardware/OS encoders can be listed yet unusable on this
                 # machine; opening the codec now surfaces that here.
                 stream.codec_context.open()
@@ -164,40 +159,3 @@ class VideoWriter:
             self._temp_path.unlink(missing_ok=True)
         if self.final_path is not None:
             self.final_path.unlink(missing_ok=True)
-
-
-def remux_for_browser(source: str, path_base: Path, max_height: Optional[int]) -> Optional[Path]:
-    """Copy the source's video stream into `path_base + .mp4` WITHOUT
-    re-encoding (v1.4), when it can already play in a browser: H.264,
-    yuv420p, no taller than max_height, timestamps starting at 0. Webcam
-    recordings (e.g. Windows Camera "WIN_..._Pro.mp4") qualify, and copying
-    takes a fraction of a second where re-encoding took ~half of the whole
-    analysis time. Returns the file, or None (caller encodes instead)."""
-    if av is None:
-        return None
-    final = path_base.parent / (path_base.name + ".mp4")
-    try:
-        with av.open(str(source)) as src:
-            if not src.streams.video:
-                return None
-            vin = src.streams.video[0]
-            ctx = vin.codec_context
-            if (ctx.name != "h264" or (ctx.pix_fmt or "") not in ("yuv420p", "yuvj420p")
-                    or (max_height and (ctx.height or 0) > max_height)
-                    or (vin.start_time not in (None, 0))):
-                return None
-            with av.open(str(final), mode="w", container_options={"movflags": "+faststart"}) as dst:
-                add = getattr(dst, "add_stream_from_template", None)
-                vout = add(vin) if add is not None else dst.add_stream(template=vin)
-                for packet in src.demux(vin):
-                    if packet.dts is None:
-                        continue
-                    packet.stream = vout
-                    dst.mux(packet)
-    except Exception:
-        final.unlink(missing_ok=True)
-        return None
-    if final.is_file() and final.stat().st_size > 0:
-        return final
-    final.unlink(missing_ok=True)
-    return None

@@ -958,30 +958,6 @@ Replays the eye rule on saved `data/frame_log.csv` files
 Only the eye rule is replayed; the other rules are unaffected by these
 limits.
 
-## 15b. Accuracy and speed changes (v1.4)
-
-**Accuracy**
-- **Sideways eye limit 0.45 -> 0.30.** On *sidee* the candidate held his eyes 0.40 to the side for 5 s (20-25 s) and it was missed. 0.30 catches it and added no incident on any of the other 11 test videos. (sherry30 57-69 s is labelled in a way that contradicts sidee; it is excluded from scoring until re-checked.)
-- **Head pose from the full face mesh** (`face/mesh_pose.py`). The old 6-point solvePnP angles read a frontal face as 15-35 deg of yaw and had the opposite sign to what the code assumed. MediaPipe's own face transform (fitted to all 478 points) is used now; with it the head-turn rule fires correctly (sherry30 recall 0.79 -> 0.90).
-- **Facing-away rule.** The head-turn rule compares with the candidate's *own* usual pose, so a candidate who faced away for the whole video (*side_2*, ~60 deg in profile) became "normal" and got NO CHEATING. The head angle is now also measured against the **camera direction** (corrected for where the face sits in the picture); beyond 40 deg for >= 3.5 s counts as not looking (reason `FACING_AWAY_FROM_CAMERA`).
-- **Eye smoothing (0.2 s running median).** The eye score jitters about +-0.1 frame to frame; single dips under the limit broke a clear look into pieces that the flicker filter then erased.
-- **Shortest look-away that counts: 3.5 s -> 3.0 s** (`temporal.seconds_to_confirm_away`). Your labels (2026-10-07) mark 3-4 s look-aways as cheating; 34t 3.2-7.0 s was held ~3.2 s and missed. 3.0 s catches it with no new false alarm.
-- **Result on your 11 labelled videos** (`tools/evaluate.py`): 24/24 labelled cheating periods caught, 0 false alarms, time F1 0.924 (v1.3: 21/24, F1 0.861).
-- **Per-candidate safety floor.** A limit is raised to 4x the candidate's own eye jitter while reading the screen, so a noisy recording cannot cause false alarms (steady candidates keep the configured limits).
-- **Second eye signal logged.** The iris position inside the eye opening (from the landmarks, independent of the blendshape model) is written to the frame log (`iris_h`, `iris_v`) for review and future tuning.
-- Optional, off by default (no labelled evidence yet): combining head and eye turn (`head_eye_deg_per_unit`).
-
-**Speed** (sidee, 38 s video: 68.6 s -> 28 s on a 2-core test machine)
-- **5 frames/second + re-check** (`video.analysis_fps`, `video_analysis/sampling.py`): landmarks are measured 5x per second; skipped frames next to a change or near a limit are measured in a second pass. Same incidents as every-frame analysis on 10 of 12 test videos (start 0.8-1.8 s earlier on the other two), ~44% of frames measured. `analysis_fps = 0` restores every-frame analysis.
-- **Review video is copied, not re-encoded**, when the upload is already browser-playable H.264 (webcam recordings are). This was ~half of the old processing time.
-- Incident clips use x264 `ultrafast` (3x faster, files ~1.8x larger); the phone/book detector runs on a background thread.
-- report.json now has a `timing` block (seconds per stage, frames measured/re-checked).
-
-**Measuring accuracy** - `tools/evaluate.py` scores the whole analysis against your `labels.csv` files: periods caught, false alarms, time precision/recall, start/end error. `--rerun` re-analyzes the source videos with the current settings first.
-
-
-Key code: `face/mesh_pose.py`, `gaze/eye_direction.py` (`iris_offset`, `smooth_eyes`, `effective_limits`, head term in `eye_deviation`), `video_analysis/sampling.py`, `video_analysis/analyzer.py` (`_measure_all`, `_measure_frames`, `rate_adjusted_config`, `_camera_relative`), `video_analysis/video_writer.py` (`remux_for_browser`), `tools/evaluate.py`, tests in `tests/test_v14_accuracy_speed.py`.
-
 ## 16. Other entry points
 
 | File | Role | Key details |

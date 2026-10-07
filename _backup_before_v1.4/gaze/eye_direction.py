@@ -84,36 +84,6 @@ def eye_direction_from_blendshapes(bs: Dict[str, float]) -> Optional[EyeDirectio
     )
 
 
-# Landmark indices: (outer corner, inner corner, iris centre) per eye.
-_IRIS_EYES = ((33, 133, 468), (263, 362, 473))
-
-
-def iris_offset(landmarks_norm: np.ndarray, width: int, height: int) -> Optional[tuple]:
-    """(h, v): iris centre relative to the middle of the eye opening, along
-    the corner-to-corner axis (h, image-right positive) and across it (v, up
-    positive), in units of half the eye width, averaged over both eyes.
-    A second, purely geometric eye-direction signal next to the blendshape
-    scores, so one model's blind spot does not hide a look away."""
-    if landmarks_norm is None or len(landmarks_norm) < 478:
-        return None
-    pts = np.asarray(landmarks_norm, dtype=np.float64)[:, :2] * np.array([width, height], dtype=np.float64)
-    hs, vs = [], []
-    for outer, inner, iris in _IRIS_EYES:
-        a, b, c = pts[outer], pts[inner], pts[iris]
-        axis = b - a
-        half = np.linalg.norm(axis) / 2.0
-        if half < 1.0:
-            return None
-        if axis[0] < 0:            # always point toward the image right
-            axis = -axis
-        u = axis / (2.0 * half)
-        n = np.array([u[1], -u[0]])  # image "up" (y grows downward)
-        d = c - (a + b) / 2.0
-        hs.append(float(d @ u) / half)
-        vs.append(float(d @ n) / half)
-    return float(np.mean(hs)), float(np.mean(vs))
-
-
 # --------------------------------------------------------------------------- #
 # Baseline: where this candidate's eyes point while reading the screen
 # --------------------------------------------------------------------------- #
@@ -133,14 +103,9 @@ class EyeBaseline:
     fallback: bool           # True: too few plausible frames, fitted from all frames
     message: str
     clusters: tuple = ()     # every substantial cluster considered (EyeCluster)
-    # Robust standard deviation of this candidate's eye position while
-    # reading the screen (frames of the chosen cluster). 0 = unknown.
-    spread_x: float = 0.0
-    spread_v: float = 0.0
 
     def to_dict(self) -> dict:
         return {"x": round(self.x, 4), "v": round(self.v, 4), "frames_used": self.frames_used,
-                "spread_x": round(self.spread_x, 4), "spread_v": round(self.spread_v, 4),
                 "prior_fraction": round(self.prior_fraction, 4), "fallback": self.fallback,
                 "message": self.message,
                 "clusters": [{"x": round(c.x, 3), "v": round(c.v, 3), "frames": c.frames} for c in self.clusters]}
@@ -208,74 +173,35 @@ def fit_eye_baseline(eyes: Sequence[Optional[EyeDirection]], ac, ic) -> Optional
                      and abs(c.x - screen.x) <= ac.cluster_max_side_offset]
             note = (f" A second common eye position {above[0].v - screen.v:+.2f} higher "
                     f"({above[0].frames} frames) was treated as looking above the screen." if above else "")
-            sx, sv = _spread(pts, screen.x, screen.v, radius)
             return EyeBaseline(screen.x, screen.v, screen.frames, fraction, False,
                                f"Screen-reading eye position found from {screen.frames} frames "
                                f"(of {int(prior.sum())} roughly-ahead frames)."
-                               + note, tuple(clusters), sx, sv)
+                               + note, tuple(clusters))
     x, v = _densest_point(pts, ac.baseline_bandwidth)
-    sx, sv = _spread(pts, float(x), float(v), radius)
     return EyeBaseline(float(x), float(v), len(pts), fraction, True,
                        f"Only {fraction:.0%} of open-eye frames look roughly ahead, so the candidate's "
                        f"usual eye position was used as the screen. The camera may be off to the side, or "
-                       f"the candidate rarely looked at the screen; review the clips.", (), sx, sv)
-
-
-def _spread(pts: np.ndarray, x: float, v: float, radius: float) -> tuple:
-    """Robust (MAD-based) standard deviation of the points near (x, v)."""
-    near = pts[np.hypot(pts[:, 0] - x, pts[:, 1] - v) <= radius]
-    if len(near) < 10:
-        return 0.0, 0.0
-    mad = np.median(np.abs(near - np.array([x, v])), axis=0) * 1.4826
-    return float(mad[0]), float(mad[1])
+                       f"the candidate rarely looked at the screen; review the clips.")
 
 
 # --------------------------------------------------------------------------- #
 # Per-frame "eyes away" decision
 # --------------------------------------------------------------------------- #
-def effective_limits(baseline: Optional[EyeBaseline], ic) -> tuple:
-    """(side, up, down) limits for this candidate: the configured limits,
-    raised for a candidate whose eyes jitter a lot while reading the screen
-    (eye_limit_spread_k times their own spread), so a noisy video does not
-    turn into false alarms. A steady candidate keeps the configured limits."""
-    k = getattr(ic, "eye_limit_spread_k", 0.0)
-    sx = baseline.spread_x if baseline is not None else 0.0
-    sv = baseline.spread_v if baseline is not None else 0.0
-    return (max(ic.eye_limit_side, k * sx), max(ic.eye_limit_up, k * sv), max(ic.eye_limit_down, k * sv))
-
-
-def eye_deviation(ed: EyeDirection, baseline: EyeBaseline, ic, head: Optional[tuple] = None) -> tuple:
-    """(rx, ry) deviation from the baseline, each divided by its limit.
-
-    head = (yaw_offset_deg, pitch_offset_deg) relative to the candidate's
-    usual head pose (yaw > 0 toward the image right, pitch > 0 down). Where
-    the person looks is head direction PLUS eye direction: eyes 0.2 to the
-    side with the head also turned 10 deg that way is further off the screen
-    than either alone, and eyes turned back against a head turn (keeping the
-    screen in view) is not a look away. ic.head_eye_deg_per_unit converts
-    degrees into blendshape units; 0 disables the head term."""
+def eye_deviation(ed: EyeDirection, baseline: EyeBaseline, ic) -> tuple:
+    """(rx, ry) deviation from the baseline, each divided by its limit."""
     dx = ed.x - baseline.x
     dv = ed.v - baseline.v
-    per_unit = getattr(ic, "head_eye_deg_per_unit", 0.0)
-    if head is not None and per_unit > 0:
-        yaw, pitch = head
-        if yaw is not None:
-            dx += yaw / per_unit
-        if pitch is not None:
-            dv -= pitch / per_unit
-    side, up, down = effective_limits(baseline, ic)
-    ry = dv / (up if dv > 0 else down)
-    return dx / side, ry
+    ry = dv / (ic.eye_limit_up if dv > 0 else ic.eye_limit_down)
+    return dx / ic.eye_limit_side, ry
 
 
-def eyes_away_direction(ed: Optional[EyeDirection], baseline: Optional[EyeBaseline], ic,
-                        head: Optional[tuple] = None) -> Optional[str]:
+def eyes_away_direction(ed: Optional[EyeDirection], baseline: Optional[EyeBaseline], ic) -> Optional[str]:
     """One of the eight directions when the eyes are turned away from the
     candidate's screen position this frame, else None (also None while
     blinking or without eye data / baseline). ic: IncidentConfig."""
     if ed is None or baseline is None or ed.blink >= ic.eye_blink_ignore:
         return None
-    rx, ry = eye_deviation(ed, baseline, ic, head)
+    rx, ry = eye_deviation(ed, baseline, ic)
     if not outside_ellipse(rx, ry):
         return None
     return direction_label(rx, ry, ic.eye_diagonal_min_ratio)
@@ -315,46 +241,14 @@ def _drop_flicker(times: Sequence[float], labels: List[Optional[str]], min_run_s
     return out
 
 
-def smooth_eyes(times: Sequence[float], eyes: Sequence[Optional[EyeDirection]], window_s: float,
-                blink_ignore: float) -> List[Optional[EyeDirection]]:
-    """Centred running median of eye x / up / down over window_s seconds
-    (open-eye frames only), so single-frame landmark jitter cannot push a
-    frame across a limit. Time-based, so it behaves the same at 30 fps and
-    when only a few frames per second are analyzed. Blink scores are kept
-    per frame (blinks are handled separately)."""
-    if window_s <= 0 or len(eyes) < 3:
-        return list(eyes)
-    t = np.asarray(times, dtype=np.float64)
-    ok = np.array([e is not None and e.blink < blink_ignore for e in eyes])
-    vals = np.array([(e.x, e.up, e.down) if e is not None else (np.nan,) * 3 for e in eyes], dtype=np.float64)
-    half = window_s / 2.0
-    lo = np.searchsorted(t, t - half, side="left")
-    hi = np.searchsorted(t, t + half, side="right")
-    out: List[Optional[EyeDirection]] = []
-    for i, e in enumerate(eyes):
-        if e is None or not ok[i]:
-            out.append(e)
-            continue
-        sel = ok[lo[i]:hi[i]]
-        if sel.sum() < 2:
-            out.append(e)
-            continue
-        x, up, down = np.median(vals[lo[i]:hi[i]][sel], axis=0)
-        out.append(EyeDirection(float(x), float(up), float(down), e.blink))
-    return out
-
-
 def label_eye_frames(times: Sequence[float], eyes: Sequence[Optional[EyeDirection]],
-                     baseline: Optional[EyeBaseline], ic,
-                     head_offsets: Optional[Sequence[Optional[tuple]]] = None) -> List[Optional[str]]:
+                     baseline: Optional[EyeBaseline], ic) -> List[Optional[str]]:
     """eyes_away label for every frame, including the closed-eyes rule:
     a blink (< eye_closed_as_away_s) is ignored, but lids held nearly
     closed for longer count as DOWN. Looking far down lowers the eyelids
     so much that MediaPipe reports a 'blink'; on the 'sir' recording the
     8 s of looking at the desk read as blink ~0.75 the whole time."""
-    smoothed = smooth_eyes(times, eyes, getattr(ic, "eye_smoothing_s", 0.0), ic.eye_blink_ignore)
-    heads = head_offsets if head_offsets is not None else [None] * len(eyes)
-    labels = [eyes_away_direction(e, baseline, ic, h) for e, h in zip(smoothed, heads)]
+    labels = [eyes_away_direction(e, baseline, ic) for e in eyes]
     if baseline is None:
         return labels
     labels = _drop_flicker(times, labels, ic.eye_min_run_s)

@@ -37,7 +37,7 @@ from video_analysis.incidents import (
 )
 from video_analysis.output_layout import ResultPaths
 from video_analysis.video_source import VideoFrameReader, VideoInfo
-from video_analysis.video_writer import VideoWriter, remux_for_browser
+from video_analysis.video_writer import VideoWriter
 
 _RED = (40, 40, 210)
 _GREEN = (60, 150, 40)
@@ -223,21 +223,8 @@ def export_media(
     for plan in plans:
         starts.setdefault(plan.first, []).append(plan)
         snapshots.setdefault(plan.snapshot_frame, []).append(plan)
-    # Review video: copy the source stream when it is already browser-playable
-    # (no re-encoding); otherwise encode it during the pass below.
-    review_copied = None
-    if vcfg.export_review_video:
-        progress(0.0, "Preparing the review video")
-        review_copied = remux_for_browser(info.path, paths.data / "review_video", vcfg.review_video_max_height)
-        if review_copied is not None:
-            result.review_video = paths.relative(review_copied)
-    encode_review = vcfg.export_review_video and review_copied is None
-    full_pass = vcfg.export_annotated_video or encode_review
-    if not full_pass and not plans:
-        progress(1.0, "Video exported")
-        return result
+    full_pass = vcfg.export_annotated_video or vcfg.export_review_video
     last_needed = total_frames - 1 if full_pass else max(p.last for p in plans)
-    first_needed = 0 if full_pass else min(p.first for p in plans)
 
     titles = {inc.number: incident_title(inc) for inc in incidents}
     annotated = (_OptionalWriter(paths.recordings / "full_video_annotated", fps, None,
@@ -245,17 +232,15 @@ def export_media(
                  if vcfg.export_annotated_video else None)
     review = (_OptionalWriter(paths.data / "review_video", fps, vcfg.review_video_max_height,
                               "review video for the web player", warnings)
-              if encode_review else None)
+              if vcfg.export_review_video else None)
 
     active: List[_ClipPlan] = []
     try:
         with VideoFrameReader(info) as reader:
-            for idx, _t, frame in reader.frames(lambda i, _t: i >= first_needed):
+            for idx, _t, frame in reader.frames():
                 check_cancel()
                 if idx >= total_frames:
                     break
-                if frame is None:       # before the first clip: skipped without decoding to an image
-                    continue
                 record = records[idx]
                 size = (frame.shape[1], frame.shape[0])
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -117,21 +117,16 @@ class VideoFrameReader:
             self._cap.release()
             self._cap = None
 
-    def frames(self, wanted: Optional[Callable[[int, float], bool]] = None
-               ) -> Iterator[Tuple[int, float, Optional[np.ndarray]]]:
-        """Every frame in order. With `wanted`, frames for which
-        wanted(index, time_s) is False are skipped without converting them
-        to an image (grab only) and are yielded with frame=None, so callers
-        still see every index and timestamp."""
+    def frames(self) -> Iterator[Tuple[int, float, np.ndarray]]:
         if self._cap is None:
             raise RuntimeError("VideoFrameReader must be used as a context manager")
         period = 1.0 / self._info.fps
         index = 0
         last_t: Optional[float] = None
         while True:
-            if not self._cap.grab():
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
                 return
-            frame = None
             pos_ms = self._cap.get(cv2.CAP_PROP_POS_MSEC)
             t = pos_ms / 1000.0 if pos_ms is not None and pos_ms >= 0 else -1.0
             if last_t is None:
@@ -140,9 +135,5 @@ class VideoFrameReader:
                 # Missing, repeated, or implausibly jumping container time.
                 t = last_t + period
             last_t = t
-            if wanted is None or wanted(index, t):
-                ok, frame = self._cap.retrieve()
-                if not ok or frame is None:
-                    return
             yield index, t, frame
             index += 1

@@ -93,9 +93,6 @@ class FaceObservation:
     # MediaPipe face blendshape scores in [0, 1] (e.g. "eyeLookOutLeft",
     # "eyeBlinkRight"); empty if the model did not return them.
     blendshapes: Dict[str, float] = field(default_factory=dict)
-    # MediaPipe facial transformation matrix (canonical face -> camera),
-    # or None if the model did not return one.
-    transform: Optional[np.ndarray] = None
 
     def px(self, index: int) -> np.ndarray:
         """Landmark pixel position (x, y) for a single index."""
@@ -146,11 +143,7 @@ class FaceTracker:
             # eye-geometry rays, respond reliably to reading beside or below
             # the screen -- see gaze/eye_direction.py.
             output_face_blendshapes=True,
-            # The 4x4 face transform is fitted to all 478 mesh points, so its
-            # head rotation is far steadier than the 6-point solvePnP pose
-            # (face/head_pose.py), which on test videos read a frontal face as
-            # 15-35 deg of yaw. Used for the head-turn and head+eye rules.
-            output_facial_transformation_matrixes=True,
+            output_facial_transformation_matrixes=False,
         )
         self._landmarker = FaceLandmarker.create_from_options(options)
 
@@ -178,7 +171,6 @@ class FaceTracker:
 
         faces = []
         all_blendshapes = result.face_blendshapes or []
-        all_transforms = result.facial_transformation_matrixes or []
         for k, face_landmarks in enumerate(result.face_landmarks):
             coords = np.array(
                 [[lm.x, lm.y, lm.z] for lm in face_landmarks],
@@ -196,8 +188,6 @@ class FaceTracker:
                     image_width=w,
                     image_height=h,
                     blendshapes=blendshapes,
-                    transform=(np.asarray(all_transforms[k], dtype=np.float64)
-                               if k < len(all_transforms) else None),
                 )
             )
         return FaceTrackerResult(face_detected=True, num_faces=len(faces), faces=faces)

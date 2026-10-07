@@ -25,11 +25,10 @@ from __future__ import annotations
 import dataclasses
 import shutil
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
@@ -45,7 +44,6 @@ from video_analysis.exporter import export_media
 from video_analysis.incidents import (
     AnalysisStats, FrameRecord, Incident, Verdict, compute_stats, compute_verdict, extract_incidents,
 )
-from video_analysis.sampling import hold_measurements, refine_frames
 from video_analysis.output_layout import ResultPaths, create_result_folders, validate_candidate_name
 from video_analysis.report import ReportContext, write_data_files, write_reports
 from video_analysis.video_source import VideoError, VideoFrameReader, VideoInfo, probe_video
@@ -55,8 +53,6 @@ CALIBRATION_FILE = "file"
 
 # Overall progress share of each stage (measuring dominates the runtime).
 _P_MEASURE = (0.00, 0.82)
-_P_MEASURE_1 = (0.00, 0.55)     # with analysis_fps: first pass ...
-_P_MEASURE_2 = (0.55, 0.82)     # ... and the re-check of frames near changes
 _P_DECIDE = (0.82, 0.85)
 _P_EXPORT = (0.85, 0.98)
 
@@ -138,66 +134,34 @@ class VideoAnalyzer:
         report_progress(0.0, "Loading the face-landmark model")
         pipeline = GazePipeline(self.cfg)
         detector = self._open_object_detector(warnings)
-        timing: dict = {}
-        mark = time.time()
-        analysis_fps = float(getattr(self.cfg.video, "analysis_fps", 0.0) or 0.0)
         try:
-            measured, times, sampled = self._measure_all(
-                pipeline, info, stage(_P_MEASURE_1 if analysis_fps > 0 else _P_MEASURE),
-                check_cancel, detector, analysis_fps)
+            measurements, times, sampled = self._measure_all(pipeline, info, stage(_P_MEASURE), check_cancel, detector)
         finally:
             pipeline.close()
             if detector is not None:
                 detector.close()
-        timing["measure_s"] = time.time() - mark
-        if not measured:
+        if not measurements:
             raise AnalysisError("No frames could be decoded from the video.")
-        if info.frame_count and len(times) < 0.95 * info.frame_count:
-            warnings.append(f"Only {len(times)} of the {info.frame_count} frames the file reports "
+        if info.frame_count and len(measurements) < 0.95 * info.frame_count:
+            warnings.append(f"Only {len(measurements)} of the {info.frame_count} frames the file reports "
                             f"could be decoded; the end of the video may be damaged.")
-        first_pass = sorted(measured)
-        first_measurements = [measured[i] for i in first_pass]
 
         # 2. Calibrate ------------------------------------------------------
-        # From the evenly spaced first-pass frames only: frames re-measured
-        # in pass 2 cluster around changes and would bias the screen position.
-        mark = time.time()
         report_progress(_P_DECIDE[0], "Locating the screen")
-        decide_cfg = rate_adjusted_config(self.cfg, [times[i] for i in first_pass])
-        eye_baseline = fit_eye_baseline([m.eye for m in first_measurements if m.num_faces > 0],
-                                        decide_cfg.video.auto_calibration, decide_cfg.video.incidents)
+        eye_baseline = fit_eye_baseline([m.eye for m in measurements if m.num_faces > 0],
+                                        self.cfg.video.auto_calibration, self.cfg.video.incidents)
         if eye_baseline is not None and eye_baseline.fallback:
             warnings.append(eye_baseline.message)
         gaze_available, calibration_desc, calibration_data = self._calibrate(
-            pipeline, calibration_mode, first_measurements, warnings, eye_baseline, decide_cfg)
-        del first_measurements
+            pipeline, calibration_mode, measurements, warnings, eye_baseline)
 
         # 3 + 4. Decide, incidents, verdict ---------------------------------
         report_progress(_P_DECIDE[0], "Classifying gaze frame by frame")
         evidence = build_evidence(times, sampled, self.cfg.video.objects) if detector is not None else None
         if evidence is not None:
             warnings += evidence.notes
-        records = self._decide_all(pipeline, hold_measurements(times, measured), times, gaze_available,
-                                   eye_baseline, evidence, first_pass=first_pass)
-        timing["decide_s"] = time.time() - mark
-
-        refined = 0
-        if analysis_fps > 0 and len(measured) < len(times) and getattr(self.cfg.video, "refine_near_changes", True):
-            # Pass 2: measure exactly the skipped frames whose decision could
-            # differ (next to a change or near a limit), then decide again.
-            mark = time.time()
-            todo = refine_frames(records, set(measured), eye_baseline, self.cfg.video.incidents)
-            if todo:
-                refined = self._measure_frames(info, todo, measured, stage(_P_MEASURE_2), check_cancel)
-                records = self._decide_all(pipeline, hold_measurements(times, measured), times,
-                                           gaze_available, eye_baseline, evidence, first_pass=first_pass)
-            timing["refine_s"] = time.time() - mark
-        for i, r in enumerate(records):
-            r.measured = i in measured
-        timing["frames_total"] = len(times)
-        timing["frames_measured"] = len(measured)
-        timing["frames_refined"] = refined
-        del measured
+        records = self._decide_all(pipeline, measurements, times, gaze_available, eye_baseline, evidence)
+        del measurements
         incidents = extract_incidents(records, self.cfg, info.fps, gaze_available)
         stats = compute_stats(records, incidents, info.fps)
         eye_rule_available = (self.cfg.video.incidents.enable_eye_direction_rule
@@ -206,7 +170,6 @@ class VideoAnalyzer:
         check_cancel()
 
         # 5. Export ---------------------------------------------------------
-        mark = time.time()
         paths = create_result_folders(self.results_root, candidate_name)
         try:
             write_data_files(paths, records, pipeline.event_engine.events, calibration_data)
@@ -218,15 +181,12 @@ class VideoAnalyzer:
                 shutil.copy2(info.path, paths.source / Path(info.path).name)
             check_cancel()
             report_progress(_P_EXPORT[1], "Writing the report")
-            timing["export_s"] = time.time() - mark
-            timing["total_s"] = time.time() - started
             ctx = ReportContext(
                 candidate_name=candidate_name, video=info, analyzed_at=started,
                 processing_seconds=time.time() - started, calibration_mode=calibration_mode,
                 calibration_description=calibration_desc, gaze_available=gaze_available,
                 stats=stats, verdict=verdict, incidents=incidents, warnings=warnings,
                 review_video=exported.review_video,
-                timing={k: (round(v, 2) if isinstance(v, float) else v) for k, v in timing.items()},
             )
             report_html = write_reports(paths, ctx, self.cfg)
         except BaseException:
@@ -253,97 +213,38 @@ class VideoAnalyzer:
             return None
 
     def _measure_all(self, pipeline: GazePipeline, info: VideoInfo, progress: ProgressCallback,
-                     check_cancel: Callable[[], None], detector=None, analysis_fps: float = 0.0):
-        """Pass 1. Returns ({frame index: compact measurement}, times of ALL
-        frames, per-frame object detections or None). With analysis_fps > 0
-        only that many frames per second are measured; the others are
-        skipped without being converted to images."""
+                     check_cancel: Callable[[], None], detector=None):
         target_w = self.cfg.video.processing_width
-        measured: Dict[int, FrameMeasurement] = {}
+        measurements: List[FrameMeasurement] = []
         times: List[float] = []
         sampled: List[Optional[list]] = []
         every_s = 1.0 / max(self.cfg.video.objects.samples_per_second, 0.1)
         next_sample = 0.0
-        every_m = 1.0 / analysis_fps if analysis_fps > 0 else 0.0
-        state = {"next": 0.0}
         expected = info.frame_count
-
-        def wanted(idx: int, t: float) -> bool:
-            if every_m <= 0 or idx == 0 or t >= state["next"] - 1e-6 or (expected and idx >= expected - 1):
-                state["next"] = t + every_m
-                return True
-            return False
-
-        # The object detector runs on its own thread (MediaPipe releases the
-        # GIL during inference), overlapping with decoding and landmarks.
-        pool = ThreadPoolExecutor(max_workers=1) if detector is not None else None
-        try:
-            with VideoFrameReader(info) as reader:
-                for idx, t, frame in reader.frames(wanted if every_m > 0 else None):
-                    check_cancel()
-                    times.append(t)
-                    if frame is None:
-                        sampled.append(None)
-                        continue
-                    frame = self._resize(frame, target_w)
-                    if pool is not None and t >= next_sample:
-                        sampled.append(pool.submit(detector.detect, frame))
-                        next_sample = t + every_s
+        with VideoFrameReader(info) as reader:
+            for idx, t, frame in reader.frames():
+                check_cancel()
+                h, w = frame.shape[:2]
+                if w > target_w:
+                    frame = cv2.resize(frame, (target_w, int(round(h * target_w / w))), interpolation=cv2.INTER_AREA)
+                m = pipeline.measure(frame, t, timestamp_ms=int(round(t * 1000)))
+                measurements.append(m.compact())
+                times.append(t)
+                if detector is not None and t >= next_sample:
+                    sampled.append(detector.detect(frame))
+                    next_sample = t + every_s
+                else:
+                    sampled.append(None)
+                if idx % 10 == 0:
+                    if expected:
+                        progress(idx / expected, f"Analyzing frame {idx + 1} of {expected}")
                     else:
-                        sampled.append(None)
-                    m = pipeline.measure(frame, t, timestamp_ms=int(round(t * 1000)))
-                    measured[idx] = m.compact()
-                    if (len(measured) % 3 == 1) if every_m > 0 else (idx % 10 == 0):
-                        if expected:
-                            progress(idx / expected, f"Analyzing frame {idx + 1} of {expected}")
-                        else:
-                            progress(0.0, f"Analyzing frame {idx + 1}")
-            sampled = [f.result() if isinstance(f, Future) else f for f in sampled]
-        finally:
-            if pool is not None:
-                pool.shutdown(wait=True, cancel_futures=True)
-        progress(1.0, f"Analyzed {len(measured)} of {len(times)} frames")
-        return measured, times, sampled
-
-    @staticmethod
-    def _resize(frame: np.ndarray, target_w: int) -> np.ndarray:
-        h, w = frame.shape[:2]
-        if w > target_w:
-            frame = cv2.resize(frame, (target_w, int(round(h * target_w / w))), interpolation=cv2.INTER_AREA)
-        return frame
-
-    def _measure_frames(self, info: VideoInfo, indices: Sequence[int], measured: Dict[int, FrameMeasurement],
-                        progress: ProgressCallback, check_cancel: Callable[[], None]) -> int:
-        """Pass 2: measure the given frame indices (sorted) with a fresh
-        landmark tracker and add them to `measured`. Returns how many."""
-        todo = sorted(set(indices) - set(measured))
-        if not todo:
-            return 0
-        want = set(todo)
-        last = todo[-1]
-        target_w = self.cfg.video.processing_width
-        pipeline = GazePipeline(self.cfg)
-        done = 0
-        try:
-            with VideoFrameReader(info) as reader:
-                for idx, t, frame in reader.frames(lambda i, _t: i in want):
-                    check_cancel()
-                    if frame is not None:
-                        m = pipeline.measure(self._resize(frame, target_w), t, timestamp_ms=int(round(t * 1000)))
-                        measured[idx] = m.compact()
-                        done += 1
-                        if done % 10 == 0:
-                            progress(done / len(todo), f"Re-checking frame {done} of {len(todo)} near changes")
-                    if idx >= last:
-                        break
-        finally:
-            pipeline.close()
-        progress(1.0, f"Re-checked {done} frames near changes")
-        return done
+                        progress(0.0, f"Analyzing frame {idx + 1}")
+        progress(1.0, f"Analyzed {len(measurements)} frames")
+        return measurements, times, sampled
 
     def _calibrate(self, pipeline: GazePipeline, mode: str, measurements: List[FrameMeasurement],
-                   warnings: List[str], eye_baseline: Optional[EyeBaseline] = None,
-                   cfg: Optional[AppConfig] = None):
+                   warnings: List[str], eye_baseline: Optional[EyeBaseline] = None):
         """Installs a calibration into pipeline.calibration. Returns
         (gaze_available, human description, dict for calibration.json)."""
         if mode == CALIBRATION_FILE:
@@ -363,7 +264,7 @@ class VideoAnalyzer:
             warnings.append(f"No usable saved calibration was found at {self.calibration_file}; "
                             f"the screen was located automatically from the video instead.")
 
-        summary = fit_auto_calibration(measurements, cfg or self.cfg, eye_baseline)
+        summary = fit_auto_calibration(measurements, self.cfg, eye_baseline)
         data = {"mode": CALIBRATION_AUTO, **summary.to_dict()}
         if not summary.success:
             warnings.append(summary.message)
@@ -378,22 +279,14 @@ class VideoAnalyzer:
 
     def _decide_all(self, pipeline: GazePipeline, measurements: List[FrameMeasurement], times: List[float],
                     gaze_available: bool, eye_baseline: Optional[EyeBaseline] = None,
-                    evidence: Optional[EvidenceResult] = None,
-                    first_pass: Optional[Sequence[int]] = None) -> List[FrameRecord]:
-        """first_pass: indices of the evenly spaced first-pass frames when
-        the video was sampled; the candidate's usual head pose is taken from
-        those only (re-measured frames cluster around changes)."""
+                    evidence: Optional[EvidenceResult] = None) -> List[FrameRecord]:
         ic = self.cfg.video.incidents
-        pool = [measurements[i] for i in first_pass] if first_pass is not None else measurements
-        head = [m.head_pose for m in pool if m.pose_ok and m.head_pose is not None]
+        head = [m.head_pose for m in measurements if m.pose_ok and m.head_pose is not None]
         base_yaw = float(np.median([h.yaw_deg for h in head])) if head else 0.0
         base_pitch = float(np.median([h.pitch_deg for h in head])) if head else 0.0
 
         eyes = [m.eye if m.num_faces > 0 else None for m in measurements]
-        head_offsets = [((m.head_pose.yaw_deg - base_yaw, m.head_pose.pitch_deg - base_pitch)
-                         if m.pose_ok and m.head_pose is not None else None) for m in measurements]
-        eye_labels = label_eye_frames(times, eyes, eye_baseline, ic, head_offsets)
-        tan_h = float(np.tan(np.radians(getattr(ic, "camera_hfov_deg", 65.0)) / 2.0))
+        eye_labels = label_eye_frames(times, eyes, eye_baseline, ic)
 
         pipeline.reset_temporal_state()
         records: List[FrameRecord] = []
@@ -407,10 +300,6 @@ class VideoAnalyzer:
             pitch_off = hp.pitch_deg - base_pitch if hp else None
             gr, sm = d.gaze_result, d.smoothed
             eye = eyes[idx]
-            cam_yaw, cam_pitch = _camera_relative(hp, m, tan_h)
-            facing_away = (cam_yaw is not None and getattr(ic, "enable_facing_away_rule", False)
-                           and outside_ellipse(cam_yaw / ic.facing_away_yaw_deg,
-                                               (cam_pitch or 0.0) / ic.facing_away_pitch_deg))
             records.append(FrameRecord(
                 index=idx,
                 time_s=t,
@@ -442,43 +331,5 @@ class VideoAnalyzer:
                 book_score=evidence.frames[idx].book if evidence else None,
                 people=evidence.frames[idx].people if evidence else 0,
                 objects=evidence.frames[idx].objects if evidence else (),
-                facing_away=bool(facing_away),
-                head_cam_yaw=cam_yaw,
-                head_cam_pitch=cam_pitch,
-                iris_h=m.iris_h,
-                iris_v=m.iris_v,
             ))
         return records
-
-
-def rate_adjusted_config(cfg: AppConfig, times: List[float]) -> AppConfig:
-    """AutoCalibrationConfig.min_samples is a frame count chosen for 30 fps
-    (one second of frames). When only some frames are analyzed (analysis_fps)
-    the same count would need several seconds of video, and on short videos
-    the screen-position step then picks a different eye cluster. Scale it to
-    the measured sampling rate so the decision is the same at any rate."""
-    if len(times) < 2:
-        return cfg
-    span = times[-1] - times[0]
-    rate = (len(times) - 1) / span if span > 0 else 30.0
-    if rate >= 27.0:
-        return cfg
-    ac = cfg.video.auto_calibration
-    scaled = max(6, int(round(ac.min_samples * rate / 30.0)))
-    return dataclasses.replace(cfg, video=dataclasses.replace(
-        cfg.video, auto_calibration=dataclasses.replace(ac, min_samples=scaled)))
-
-
-def _camera_relative(hp, m: FrameMeasurement, tan_half_hfov: float):
-    """Head yaw/pitch relative to the direction of the camera as seen from
-    the face (0, 0 = facing the lens), or (None, None). A face at the left
-    edge of the picture that looks into the lens is turned toward the image
-    right by the angle of the camera ray, which is removed here. The aspect
-    ratio is taken as 16:9 (webcams) for the vertical field of view."""
-    if hp is None:
-        return None, None
-    yaw, pitch = hp.yaw_deg, hp.pitch_deg
-    if m.face_cx is not None and m.face_cy is not None:
-        yaw += float(np.degrees(np.arctan((m.face_cx - 0.5) * 2.0 * tan_half_hfov)))
-        pitch -= float(np.degrees(np.arctan((0.5 - m.face_cy) * 2.0 * tan_half_hfov * 9.0 / 16.0)))
-    return yaw, pitch

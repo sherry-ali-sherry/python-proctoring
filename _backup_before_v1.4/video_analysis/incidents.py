@@ -49,11 +49,10 @@ REASON_GAZE = "GAZE_OFF_SCREEN"
 REASON_EYES = "EYES_TURNED_AWAY"
 REASON_FACE = "FACE_NOT_VISIBLE"
 REASON_HEAD = "HEAD_TURNED_AWAY"
-REASON_FACING = "FACING_AWAY_FROM_CAMERA"
 REASON_PHONE = "PHONE_VISIBLE"
 REASON_BOOK = "BOOK_VISIBLE"
 REASON_PEOPLE = "MULTIPLE_PEOPLE"
-GAZE_REASONS = (REASON_GAZE, REASON_EYES, REASON_HEAD, REASON_FACING, REASON_FACE)
+GAZE_REASONS = (REASON_GAZE, REASON_EYES, REASON_HEAD, REASON_FACE)
 OBJECT_REASONS = (REASON_PHONE, REASON_BOOK, REASON_PEOPLE)
 
 REASON_TEXT = {
@@ -61,7 +60,6 @@ REASON_TEXT = {
     REASON_EYES: "Eyes turned away from the screen",
     REASON_FACE: "Face not visible to the camera",
     REASON_HEAD: "Head turned away from the screen",
-    REASON_FACING: "Face turned away from the camera and screen",
     REASON_PHONE: "Phone visible",
     REASON_BOOK: "Book visible",
     REASON_PEOPLE: "More than one person in view",
@@ -106,12 +104,6 @@ class FrameRecord:
     people: int = 0                             # people seen by the object detector
     objects: tuple = ()                         # detections to draw on clips
     incident_number: Optional[int] = None
-    facing_away: bool = False                   # head turned far from the camera (absolute)
-    head_cam_yaw: Optional[float] = None        # head angle relative to the camera direction
-    head_cam_pitch: Optional[float] = None
-    iris_h: Optional[float] = None              # landmark iris position (pipeline.iris_offset)
-    iris_v: Optional[float] = None
-    measured: bool = True                       # False: filled in from the nearest analyzed frame
 
 
 @dataclass
@@ -299,12 +291,6 @@ def _direction(records: Sequence[FrameRecord], iv: _Interval, cfg: AppConfig) ->
     if any(r.away_direction for r in span):
         return _summarize_directions(span, [r.away_direction for r in span])
     ic = cfg.video.incidents
-    facing = [r for r in span if r.facing_away and r.head_cam_yaw is not None]
-    if facing and not any(r.head_turned for r in span):
-        yaw = float(np.median([r.head_cam_yaw for r in facing]))
-        pitch = float(np.median([r.head_cam_pitch or 0.0 for r in facing]))
-        return direction_label(yaw / ic.facing_away_yaw_deg, -pitch / ic.facing_away_pitch_deg,
-                               ic.eye_diagonal_min_ratio)
     turned = [r for r in span if r.head_turned and r.head_yaw_offset is not None]
     if turned:
         yaw = float(np.median([r.head_yaw_offset for r in turned]))
@@ -368,16 +354,12 @@ def extract_incidents(
         intervals += _persistent_intervals(
             records, [r.num_faces > 0 and r.head_turned for r in records],
             temporal.seconds_to_confirm_away, REASON_HEAD, dt)
-    if getattr(ic, "enable_facing_away_rule", False):
-        intervals += _persistent_intervals(
-            records, [r.num_faces > 0 and r.facing_away for r in records],
-            temporal.seconds_to_confirm_away, REASON_FACING, dt)
     if ic.enable_eye_direction_rule:
         intervals += _glance_tolerant_intervals(
             records, [r.num_faces > 0 and r.eyes_away is not None for r in records],
             ic.merge_gap_s, temporal.seconds_to_confirm_away, REASON_EYES, dt)
 
-    found = _build(records, intervals, cfg, dt, [REASON_GAZE, REASON_EYES, REASON_HEAD, REASON_FACING, REASON_FACE])
+    found = _build(records, intervals, cfg, dt, [REASON_GAZE, REASON_EYES, REASON_HEAD, REASON_FACE])
 
     # Phone / book / extra person: separate incidents (never merged with
     # the looking-away ones), each with its own clip and snapshot.

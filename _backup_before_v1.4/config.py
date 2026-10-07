@@ -146,10 +146,7 @@ class TemporalConfig:
     # point and confidence. Higher = more responsive, less smooth.
     ema_alpha: float = 0.25
     # Hysteresis durations before a state transition is committed.
-    # v1.4: 3.5 -> 3.0. The user's own labels (2026-10-07) mark look-aways of
-    # 3.0-4.0 s as cheating (34t 3.2-7.0 s was held ~3.2 s and missed);
-    # 3.0 catches it with no new false alarm on the 11 labelled videos.
-    seconds_to_confirm_away: float = 3.0
+    seconds_to_confirm_away: float = 3.5
     seconds_to_confirm_screen: float = 0.5
     seconds_to_confirm_face_lost: float = 1.5
     seconds_to_confirm_multi_face: float = 2.0
@@ -256,10 +253,7 @@ class IncidentConfig:
     # looking at a screen corner measured up to ~0.46 sideways, notes and
     # side glances 0.55-0.95 (0.45).
     enable_eye_direction_rule: bool = True
-    # v1.4: side 0.45 -> 0.30. 'sidee' (labelled) held the eyes 0.40 to the
-    # side for 5 s and was missed; 0.30 catches it and added no incident on
-    # any of the 11 other test videos. See tools/evaluate.py.
-    eye_limit_side: float = 0.30
+    eye_limit_side: float = 0.45
     eye_limit_up: float = 0.34
     eye_limit_down: float = 0.35
     # Label a look as diagonal (e.g. DOWN-LEFT) when the smaller normalized
@@ -272,35 +266,6 @@ class IncidentConfig:
     # ... unless the eyes stay this closed for at least this long: looking
     # far down lowers the lids enough to read as a blink. 0 disables.
     eye_closed_as_away_s: float = 1.0
-    # Per-candidate safety floor (v1.4): a limit is raised to this many times
-    # the candidate's own eye jitter while reading the screen (EyeBaseline
-    # spread), so a noisy recording cannot produce false alarms. On the test
-    # videos the jitter was 0.04-0.07, so the configured limits apply.
-    eye_limit_spread_k: float = 4.0
-    # Running median over this many seconds applied to the eye scores before
-    # the limits are tested (removes single-frame landmark jitter). 0 = off.
-    # v1.4: on 'sidee' the eye score jittered +-0.1 frame to frame, so a look
-    # held clearly to the side kept dipping under the limit for single frames
-    # and the flicker filter erased its first ~1 s. 0.2 s fixes that and did
-    # not change any result on the labelled videos.
-    eye_smoothing_s: float = 0.2
-    # Head + eye combination (v1.4): degrees of head turn that count as one
-    # blendshape unit of eye turn, so gaze = head offset + eye offset. Eyes
-    # turned back against a head turn (keeping the screen in view) then cancel
-    # out. 0 disables (eye rule uses the eyes alone).
-    head_eye_deg_per_unit: float = 0.0
-    # Facing-away rule (v1.4): the head turned this far from the CAMERA
-    # (not from the candidate's own usual pose) for >= seconds_to_confirm_away
-    # counts as not looking at the screen. A webcam sits on the screen, so a
-    # face held in profile is not reading it - even when that is the
-    # candidate's "usual" pose for the whole video (seen on 'side_2').
-    enable_facing_away_rule: bool = True
-    facing_away_yaw_deg: float = 40.0
-    facing_away_pitch_deg: float = 45.0
-    # Horizontal field of view assumed for the webcam, used to correct the
-    # head angle for where the face sits in the picture (a face at the edge
-    # of the image that looks at the lens is turned toward the centre).
-    camera_hfov_deg: float = 65.0
 
 
 @dataclass
@@ -355,19 +320,6 @@ class VideoAnalysisConfig:
     # (gaze geometry is angle-based, so it is resolution-independent).
     # Clips and snapshots are always cut from the original frames.
     processing_width: int = 960
-    # Face landmarks are measured on this many frames per second; the
-    # frames in between are filled from the nearest measured frame, and
-    # every skipped frame next to a change or near a limit is measured in a
-    # second pass (video_analysis/sampling.py). On the 12 test videos this
-    # gave the same incidents as measuring every frame on 10 videos (start
-    # within 0.8-1.8 s on the other 2) while measuring ~44% of the frames.
-    # 0 = measure every frame (slowest, the pre-v1.4 behaviour).
-    analysis_fps: float = 5.0
-    # With analysis_fps > 0: re-measure skipped frames next to a change or a
-    # limit (second pass). Off = fastest, but borderline moments are judged
-    # from frames up to 1/analysis_fps apart (results differed from every-frame
-    # analysis on 4 of 12 test videos without it, on 2 of 12 with it).
-    refine_near_changes: bool = True
     # Context kept before/after each incident in its recording clip.
     clip_padding_s: float = 1.0
     # Also write one full-length video with the verdict banner burned in.

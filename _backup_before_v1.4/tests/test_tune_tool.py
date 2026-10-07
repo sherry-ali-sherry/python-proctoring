@@ -60,21 +60,12 @@ def test_bad_labels_are_reported(tmp_path, sir_folder):
 
 def test_regression_sherry30_user_labelled(tmp_path):
     """The user's own flagged test video (2026-09-30): screen reading at two
-    heights, above-screen 12-15 s, side glances, down 38-42 s and a head turn
-    51-58 s.
-
-    v1.4: 57-69 s is left out of the score. Those labels contradict the
-    'sidee' video (2026-10-06): there the user marked eyes held 0.40 to the
-    side as cheating, while here 63-66 s (eyes 0.46 to the side, head
-    straight) was marked as looking at the screen's corner. No eye limit can
-    satisfy both; the side limit now follows the newer 'sidee' label (see
-    test_regression_sidee_side_glance) until the user re-checks sherry30."""
+    heights, above-screen 12-15 s, side glances, down 38-42 s, a head turn
+    51-58 s and looking at the screen's corner 63-66 s (not cheating)."""
     folder = tmp_path / "sherry30"
     (folder / "data").mkdir(parents=True)
     shutil.copy(ROOT / "tests" / "data" / "sherry30_eye_log.csv", folder / "data" / "frame_log.csv")
-    rows = (ROOT / "tests" / "data" / "sherry30_labels.csv").read_text().splitlines()
-    kept = [rows[0]] + [r for r in rows[1:] if r and not (57.0 <= float(r.split(",")[0]) < 69.0)]
-    (folder / "labels.csv").write_text("\n".join(kept) + "\n")
+    shutil.copy(ROOT / "tests" / "data" / "sherry30_labels.csv", folder / "labels.csv")
     s = tool.load_session(folder)
     cfg = AppConfig()
     from gaze.eye_direction import fit_eye_baseline
@@ -85,23 +76,4 @@ def test_regression_sherry30_user_labelled(tmp_path):
     t = s.log.times
     share = lambda a, z: sum(1 for i, x in enumerate(t) if a <= x < z and in_period[i]) / sum(1 for x in t if a <= x < z)
     assert share(12.5, 15.5) > 0.9 and share(25, 29) > 0.9 and share(37, 41) > 0.9
-    assert share(0, 7) == 0 and share(43, 50) == 0
-
-
-def test_regression_sidee_side_glance(tmp_path):
-    """'sidee' (2026-10-06): the user reported that the eyes held to the side
-    from ~20 to ~25 s (0.40 from his screen position, head still) were
-    missed with the old 0.45 side limit."""
-    folder = tmp_path / "sidee"
-    (folder / "data").mkdir(parents=True)
-    shutil.copy(ROOT / "tests" / "data" / "sidee_eye_log.csv", folder / "data" / "frame_log.csv")
-    shutil.copy(ROOT / "tests" / "data" / "sidee_labels.csv", folder / "labels.csv")
-    s = tool.load_session(folder)
-    cfg = AppConfig()
-    from gaze.eye_direction import fit_eye_baseline
-    b = fit_eye_baseline(s.log.eyes, cfg.video.auto_calibration, cfg.video.incidents)
-    _, in_period = tool.predict(s, tool._with_limits(cfg, tool._current_limits(cfg)), b)
-    t = s.log.times
-    share = lambda a, z: sum(1 for i, x in enumerate(t) if a <= x < z and in_period[i]) / sum(1 for x in t if a <= x < z)
-    assert share(20.0, 24.5) > 0.9
-    assert share(0, 7) == 0 and share(14, 19) == 0 and share(26, 29) == 0
+    assert share(0, 7) == 0 and share(43, 50) == 0 and share(63.5, 65.5) < 0.2

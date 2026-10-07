@@ -67,12 +67,6 @@ FIELDS: List[Field] = [
     Field("video.objects.seconds_to_confirm_object", float, "Phone/book must be visible for (s)", "", "Phone, book, people", 0, 30),
     Field("temporal.seconds_to_confirm_multi_face", float, "Extra person must be in view for (s)", "", "Phone, book, people", 0.2, 30),
     Field("video.objects.samples_per_second", float, "Frames checked per second", "More = catches brief moments, slower analysis.", "Phone, book, people", 0.5, 10),
-    Field("video.analysis_fps", float, "Face analysis frames per second", "Frames measured per second; frames near a change or a limit are always re-checked at full rate. 0 = every frame (slowest).", "Speed", 0, 60),
-    Field("video.refine_near_changes", bool, "Re-check frames near changes at full rate", "Recommended. Off = faster, slightly less exact around borderline moments.", "Speed"),
-    Field("video.incidents.enable_facing_away_rule", bool, "Count a face turned away from the camera as not looking", "Catches a candidate who faces away (e.g. in profile) for most of the video, which the relative head-turn rule cannot see.", "Detection"),
-    Field("video.incidents.facing_away_yaw_deg", float, "Facing away from camera: left/right limit (deg)", "Head angle relative to the camera, corrected for where the face is in the picture.", "Detection", 15, 90),
-    Field("video.incidents.head_eye_deg_per_unit", float, "Combine head and eye turn (deg per eye unit)", "0 = off. When on, eye and head turns add up (and cancel when the eyes compensate a head turn).", "Eyes", 0, 120),
-    Field("video.incidents.eye_smoothing_s", float, "Eye signal smoothing (s)", "Running median before the limits are tested. 0 = off.", "Eyes", 0, 2),
     Field("video.clip_padding_s", float, "Clip context before/after (s)", "Extra video kept around each incident clip.", "Output", 0, 30),
     Field("video.export_annotated_video", bool, "Also export the full annotated video", "Slower; writes the whole video with a status banner.", "Output"),
 ]

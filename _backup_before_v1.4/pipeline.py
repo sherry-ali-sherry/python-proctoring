@@ -33,8 +33,7 @@ from config import AppConfig
 from face.face_tracker import FaceTracker, FaceObservation
 from face.face_geometry import FaceGeometryEstimator, FacePose
 from face.head_pose import HeadPoseEstimator, HeadPoseAngles
-from face.mesh_pose import head_pose_from_transform
-from gaze.eye_direction import EyeDirection, eye_direction_from_blendshapes, iris_offset
+from gaze.eye_direction import EyeDirection, eye_direction_from_blendshapes
 from gaze.eye_model import EyeModel, EyeCenters
 from gaze.iris_tracker import IrisTracker
 from gaze.gaze_ray import GazeRay, build_gaze_ray
@@ -62,14 +61,6 @@ class FrameMeasurement:
     iris_left_valid: bool = False
     iris_right_valid: bool = False
     eye: Optional[EyeDirection] = None      # blendshape eye-in-head direction
-    # Iris position inside the eye opening from the landmarks (independent
-    # of the blendshape model): image-right / up positive, in half eye widths.
-    iris_h: Optional[float] = None
-    iris_v: Optional[float] = None
-    # Face centre in the image (0..1, between the eyes), used to measure the
-    # head angle relative to the camera rather than to the optical axis.
-    face_cx: Optional[float] = None
-    face_cy: Optional[float] = None
     # Heavy, overlay-only fields:
     face: Optional[FaceObservation] = None
     pose: Optional[FacePose] = None
@@ -138,16 +129,6 @@ class GazePipeline:
             face=face, face_confidence=face.face_confidence,
             eye=eye_direction_from_blendshapes(face.blendshapes),
         )
-        centre = face.landmarks_norm[[33, 263, 1], :2].mean(axis=0)
-        m.face_cx, m.face_cy = float(centre[0]), float(centre[1])
-        iris = iris_offset(face.landmarks_norm, face.image_width, face.image_height)
-        if iris is not None:
-            m.iris_h, m.iris_v = iris
-        # Head rotation from the full-mesh transform when available (the
-        # 6-point solvePnP angles are kept only as a fallback; see
-        # face/mesh_pose.py). pose_ok still requires the solvePnP fit, which
-        # the 3D eye model needs.
-        mesh_pose = head_pose_from_transform(face.transform)
 
         pose = self.geometry.estimate(face)
         if pose is None:
@@ -156,7 +137,7 @@ class GazePipeline:
         m.pose_ok = True
         m.reprojection_error_px = pose.reprojection_error_px
 
-        m.head_pose = mesh_pose or self.head_pose_estimator.estimate(pose)
+        m.head_pose = self.head_pose_estimator.estimate(pose)
         eye_centers = self.eye_model.estimate(pose)
         m.eye_centers = eye_centers
 

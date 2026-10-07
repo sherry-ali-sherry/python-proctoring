@@ -69,7 +69,6 @@ class ReportContext:
     incidents: Sequence[Incident]
     warnings: List[str] = field(default_factory=list)
     review_video: Optional[str] = None  # relative to the results folder
-    timing: dict = field(default_factory=dict)   # seconds per stage, frames measured
 
 
 def fmt_duration(seconds: float) -> str:
@@ -114,19 +113,14 @@ def write_data_files(paths: ResultPaths, records: Sequence[FrameRecord], events:
                     "screen_x", "screen_y", "smoothed_x", "smoothed_y", "smoothed_confidence",
                     "away_direction", "head_yaw_deg", "head_pitch_deg", "head_roll_deg",
                     "head_turned", "eye_x", "eye_up", "eye_down", "eye_blink", "eyes_away", "phone_score", "book_score", "people",
-                    "not_looking", "incident_number",
-                    "head_yaw_offset", "head_pitch_offset", "head_cam_yaw", "head_cam_pitch", "facing_away",
-                    "iris_h", "iris_v", "measured"])
+                    "not_looking", "incident_number"])
         for r in records:
             w.writerow([r.index, round(r.time_s, 4), timecode(r.time_s), r.num_faces, r.state.value,
                         num(r.gaze_confidence), num(r.screen_x), num(r.screen_y), num(r.smoothed_x),
                         num(r.smoothed_y), num(r.smoothed_confidence), r.away_direction or "",
                         num(r.head_yaw, 2), num(r.head_pitch, 2), num(r.head_roll, 2),
                         int(r.head_turned), num(r.eye_x, 3), num(r.eye_up, 3), num(r.eye_down, 3),
-                        num(r.eye_blink, 3), r.eyes_away or "", num(r.phone_score, 3), num(r.book_score, 3), r.people, int(r.incident_number is not None), r.incident_number or "",
-                        num(r.head_yaw_offset, 2), num(r.head_pitch_offset, 2), num(r.head_cam_yaw, 2),
-                        num(r.head_cam_pitch, 2), int(r.facing_away), num(r.iris_h, 3), num(r.iris_v, 3),
-                        int(r.measured)])
+                        num(r.eye_blink, 3), r.eyes_away or "", num(r.phone_score, 3), num(r.book_score, 3), r.people, int(r.incident_number is not None), r.incident_number or ""])
 
     # LOOKING_AWAY_CONTINUED fires on every frame of an away period; the
     # STARTED/RESUMED pair already carries its start, end and duration.
@@ -144,7 +138,6 @@ def build_report_dict(ctx: ReportContext, cfg: AppConfig) -> dict:
     return {
         "candidate_name": ctx.candidate_name,
         "analyzed_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ctx.analyzed_at)),
-"timing": ctx.timing,
         "processing_seconds": round(ctx.processing_seconds, 1),
         "video": {**dataclasses.asdict(ctx.video), "description": ctx.video.describe()},
         "review_video": ctx.review_video,
